@@ -1,9 +1,10 @@
 import argparse
+import os
 import sqlite3
+import sys
 import hashlib
 import logging
 import random
-import pandas as pd
 from faker import Faker
 
 # Configure logging
@@ -89,6 +90,13 @@ def mask_data(db_file, table_name, columns, masking_function, partial_mask_perce
     """
     Connects to the SQLite database and applies the specified masking function to the given columns.
     """
+    # Refuse a missing database file before connecting: sqlite3.connect
+    # creates an empty file for a path that does not exist, so a typo
+    # used to leave a stray zero byte database on disk and still exit 0.
+    if not os.path.isfile(db_file):
+        raise ValueError(f"Database file '{db_file}' does not exist.")
+
+    conn = None
     try:
         conn = sqlite3.connect(db_file)
         cursor = conn.cursor()
@@ -98,12 +106,17 @@ def mask_data(db_file, table_name, columns, masking_function, partial_mask_perce
         if not cursor.fetchone():
             raise ValueError(f"Table '{table_name}' does not exist in the database.")
 
-        # Input validation: Check if columns exist
+        # Input validation: Check if columns exist. The valid names come
+        # from the schema itself (PRAGMA table_info) instead of probing
+        # with an interpolated SELECT: table and column names are built
+        # into the UPDATE statements below as identifiers, which cannot
+        # be bound as parameters, so confirming each name against the
+        # schema is what keeps a crafted name from becoming SQL.
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        known_columns = {row[1] for row in cursor.fetchall()}
         for column in columns:
-            try:
-                cursor.execute(f"SELECT {column} FROM {table_name} LIMIT 1")  # Attempt to select column
-            except sqlite3.Error as e:
-                raise ValueError(f"Column '{column}' does not exist in table '{table_name}'. Error: {e}") from e
+            if column not in known_columns:
+                raise ValueError(f"Column '{column}' does not exist in table '{table_name}'.")
 
         # Prepare the update query based on the masking function
         if masking_function == "redact":
@@ -139,10 +152,13 @@ def mask_data(db_file, table_name, columns, masking_function, partial_mask_perce
 
     except sqlite3.Error as e:
         logging.error(f"Database error: {e}")
+        raise
     except ValueError as e:
         logging.error(f"Input error: {e}")
+        raise
     except Exception as e:
         logging.error(f"An unexpected error occurred: {e}")
+        raise
     finally:
         if conn:
             conn.close()
@@ -155,8 +171,11 @@ def main():
     args = setup_argparse()
 
     try:
-        # Validate partial_mask_percentage
-        if args.masking_function == "partial" and (args.partial_mask_percentage < 0 or args.partial_mask_percentage > 100):
+        # Validate partial_mask_percentage whenever it is supplied out
+        # of range, not only in partial mode, and in all cases let main
+        # exit non-zero below: validation used to be logged and
+        # swallowed, so an invalid percentage still exited 0.
+        if args.partial_mask_percentage < 0 or args.partial_mask_percentage > 100:
             raise ValueError("partial_mask_percentage must be between 0 and 100.")
 
         mask_data(
@@ -169,8 +188,10 @@ def main():
 
     except ValueError as e:
         logging.error(e)
+        sys.exit(1)
     except Exception as e:
         logging.error(f"An unexpected error occurred: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
