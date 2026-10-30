@@ -127,7 +127,7 @@ def mask_data(db_file, table_name, columns, masking_function, partial_mask_perce
             rows = cursor.fetchall()
 
             for rowid, value in rows:
-                masked_value = mask_func(value, percentage=partial_mask_percentage)
+                masked_value = mask_func(value, percentage=partial_mask_percentage) if masking_function == "partial" else mask_func(value)
                 cursor.execute(
                     f"UPDATE {table_name} SET {column} = ? WHERE rowid = ?",
                     (masked_value, rowid),
