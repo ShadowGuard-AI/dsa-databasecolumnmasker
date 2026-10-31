@@ -16,3 +16,7 @@ Connects to a SQLite database and applies a chosen masking function (e.g., redac
 
 ## License
 Copyright (c) ShadowStrikeHQ
+
+## Notes
+- Before the first update, the tool writes a timestamped backup copy of the database file beside it and prints its path. If the backup copy cannot be written, the run is refused at exit 1 and the database is not changed.
+- The tool prints how many rows were masked in each column. A run that masks zero rows in every named column, for example over an empty table, exits 1 and does not report a completed masking.

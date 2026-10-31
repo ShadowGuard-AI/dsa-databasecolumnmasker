@@ -5,6 +5,9 @@ import sys
 import hashlib
 import logging
 import random
+import shutil
+from datetime import datetime
+from pathlib import Path
 from faker import Faker
 
 # Configure logging
@@ -134,10 +137,36 @@ def mask_data(db_file, table_name, columns, masking_function, partial_mask_perce
         else:
             raise ValueError(f"Invalid masking function: {masking_function}")
 
+        # Count rows first: a run that would mask zero rows in every
+        # named column is a failure, not a completed masking.
+        total_rows = 0
+        for column in columns:
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+            total_rows += cursor.fetchone()[0]
+        if total_rows == 0:
+            raise ValueError(f"No rows were masked: table '{table_name}' holds no rows for the named columns.")
+
+        # Write a timestamped backup copy beside the database before
+        # the first UPDATE, and refuse to run if it cannot be written.
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        backup_path = Path(str(db_file) + f".backup-{timestamp}")
+        counter = 1
+        while backup_path.exists():
+            backup_path = Path(str(db_file) + f".backup-{timestamp}-{counter}")
+            counter += 1
+        try:
+            shutil.copy2(db_file, backup_path)
+        except Exception as e:
+            raise ValueError(f"Backup copy could not be written to '{backup_path}': {e}")
+        print(f"Backup copy written to: {backup_path}")
+        logging.info(f"Backup copy written to: {backup_path}")
+
+        rows_masked = {}
         for column in columns:
             # Fetch all values from the column
             cursor.execute(f"SELECT rowid, {column} FROM {table_name}")
             rows = cursor.fetchall()
+            count = 0
 
             for rowid, value in rows:
                 masked_value = mask_func(value, percentage=partial_mask_percentage) if masking_function == "partial" else mask_func(value)
@@ -145,10 +174,16 @@ def mask_data(db_file, table_name, columns, masking_function, partial_mask_perce
                     f"UPDATE {table_name} SET {column} = ? WHERE rowid = ?",
                     (masked_value, rowid),
                 )
-            logging.info(f"Column '{column}' in table '{table_name}' masked using '{masking_function}'.")
+                count += 1
+            rows_masked[column] = count
+            logging.info(f"Column '{column}' in table '{table_name}' masked using '{masking_function}': {count} rows masked.")
+
+        if sum(rows_masked.values()) == 0:
+            raise ValueError("No rows were masked in any named column.")
 
         conn.commit()
-        logging.info(f"Data masking completed successfully for table '{table_name}' in '{db_file}'.")
+        logging.info(f"Data masking completed successfully for table '{table_name}' in '{db_file}'. Rows masked per column: {rows_masked}.")
+        return rows_masked
 
     except sqlite3.Error as e:
         logging.error(f"Database error: {e}")
